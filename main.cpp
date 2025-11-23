@@ -1,11 +1,14 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <string>
+#include <functional>
 #include "HtmlTokenizer.h"
 #include "DomParser.h"
 #include "CssExtractor.h"
+#include "CssTokenizer.h"
 #include "CssParser.h"
-#include <functional>
+#include "CssOM.h"
+#include "Style.h"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -126,11 +129,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             auto tokens = HtmlTokenizer::Tokenize(html);
             auto dom = DomParser::Parse(tokens);
 
-            auto styles = CssExtractor::ExtractStyles(dom);
+            auto styleTexts = CssExtractor::ExtractStyles(dom);
 
             CSSStyleSheet sheet;
 
-            for (auto& cssText : styles)
+            for (auto& cssText : styleTexts)
             {
                 auto cssTokens = CssTokenizer::Tokenize(cssText);
                 CSSStyleSheet part = CssParser::Parse(cssTokens);
@@ -139,18 +142,45 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     sheet.rules.push_back(rule);
             }
 
+            auto styledRoot = StyleEngine::BuildTree(dom, sheet);
+
             std::string output;
 
-            for (auto& rule : sheet.rules)
-            {
-                output += "Selector: " + rule.selector + "\n";
-                for (auto& d : rule.declarations)
-                    output += "  " + d.property + ": " + d.value + "\n";
-                output += "\n";
-            }
+            std::function<void(std::shared_ptr<StyledNode>, int)> printStyled;
+            printStyled = [&](std::shared_ptr<StyledNode> node, int depth)
+                {
+                    for (int i = 0; i < depth; i++)
+                        output += "  ";
 
-            std::wstring wo(output.begin(), output.end());
-            SetWindowText(hOutput, wo.c_str());
+                    if (node->dom->type == NodeType::Element)
+                        output += "<" + node->dom->name + ">";
+                    else
+                        output += "\"" + node->dom->name + "\"";
+
+                    if (!node->styles.properties.empty())
+                    {
+                        output += " [";
+                        bool first = true;
+                        for (auto& kv : node->styles.properties)
+                        {
+                            if (!first)
+                                output += "; ";
+                            output += kv.first + ": " + kv.second;
+                            first = false;
+                        }
+                        output += "]";
+                    }
+
+                    output += "\r\n";
+
+                    for (auto& child : node->children)
+                        printStyled(child, depth + 1);
+                };
+
+            printStyled(styledRoot, 0);
+
+            std::wstring woutput(output.begin(), output.end());
+            SetWindowText(hOutput, woutput.c_str());
         }
         break;
     case WM_SIZE:

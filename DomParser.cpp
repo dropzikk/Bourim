@@ -13,7 +13,10 @@ std::shared_ptr<DomNode> DomParser::Parse(const std::vector<HtmlToken>& tokens)
         {
         case HtmlTokenType::OpenTag:
         {
-            auto node = std::make_shared<DomNode>(NodeType::Element, token.value);
+            auto node = std::make_shared<DomNode>(NodeType::Element, token.data);
+            for (const auto& a : token.attributes)
+                node->attributes.push_back({ a.name, a.value });
+
             stack.top()->children.push_back(node);
             stack.push(node);
         }
@@ -28,14 +31,17 @@ std::shared_ptr<DomNode> DomParser::Parse(const std::vector<HtmlToken>& tokens)
 
         case HtmlTokenType::SelfClosingTag:
         {
-            auto node = std::make_shared<DomNode>(NodeType::Element, token.value);
+            auto node = std::make_shared<DomNode>(NodeType::Element, token.data);
+            for (const auto& a : token.attributes)
+                node->attributes.push_back({ a.name, a.value });
+
             stack.top()->children.push_back(node);
         }
         break;
 
         case HtmlTokenType::Text:
         {
-            auto node = std::make_shared<DomNode>(NodeType::Text, token.value);
+            auto node = std::make_shared<DomNode>(NodeType::Text, token.data);
             stack.top()->children.push_back(node);
         }
         break;

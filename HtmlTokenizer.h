@@ -4,6 +4,11 @@
 #include <string>
 #include <vector>
 
+struct HtmlAttribute {
+    std::string name;
+    std::string value;
+};
+
 enum class HtmlTokenType {
     Text,
     OpenTag,
@@ -13,7 +18,8 @@ enum class HtmlTokenType {
 
 struct HtmlToken {
     HtmlTokenType type;
-    std::string value;
+    std::string data;
+    std::vector<HtmlAttribute> attributes;
 };
 
 class HtmlTokenizer {

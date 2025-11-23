@@ -17,25 +17,51 @@ CSSStyleSheet CssParser::Parse(const std::vector<CSSToken>& tokens)
     {
         if (tokens[i].type == CSSTokenType::EOFToken)
             break;
-        if (tokens[i].type != CSSTokenType::Ident &&
-            tokens[i].type != CSSTokenType::Hash &&
-            tokens[i].type != CSSTokenType::Delim)
+
+        CSSRule rule;
+        bool hasSelector = false;
+
+        if (tokens[i].type == CSSTokenType::Ident)
+        {
+            rule.selector = tokens[i].value;
+            i++;
+            hasSelector = true;
+        }
+        else if (tokens[i].type == CSSTokenType::Hash)
+        {
+            rule.selector = "#" + tokens[i].value;
+            i++;
+            hasSelector = true;
+        }
+        else if (tokens[i].type == CSSTokenType::Delim && tokens[i].value == ".")
+        {
+            i++;
+            if (i < n && tokens[i].type == CSSTokenType::Ident)
+            {
+                rule.selector = "." + tokens[i].value;
+                i++;
+                hasSelector = true;
+            }
+        }
+
+        if (!hasSelector)
         {
             i++;
             continue;
         }
-        std::string selector = tokens[i].value;
-        i++;
-        if (tokens[i].type != CSSTokenType::CurlyOpen) {
+
+        if (i >= n || tokens[i].type != CSSTokenType::CurlyOpen)
+        {
             i++;
             continue;
         }
+
         i++;
-        CSSRule rule;
-        rule.selector = selector;
+
         while (i < n && tokens[i].type != CSSTokenType::CurlyClose)
         {
-            if (tokens[i].type != CSSTokenType::Ident) {
+            if (tokens[i].type != CSSTokenType::Ident)
+            {
                 i++;
                 continue;
             }
@@ -47,7 +73,8 @@ CSSStyleSheet CssParser::Parse(const std::vector<CSSToken>& tokens)
 
             std::string value;
 
-            while (i < n && tokens[i].type != CSSTokenType::Semicolon &&
+            while (i < n &&
+                tokens[i].type != CSSTokenType::Semicolon &&
                 tokens[i].type != CSSTokenType::CurlyClose)
             {
                 value += tokens[i].value;
@@ -60,11 +87,11 @@ CSSStyleSheet CssParser::Parse(const std::vector<CSSToken>& tokens)
 
             rule.declarations.push_back({ property, value });
 
-            if (tokens[i].type == CSSTokenType::Semicolon)
+            if (i < n && tokens[i].type == CSSTokenType::Semicolon)
                 i++;
         }
 
-        if (tokens[i].type == CSSTokenType::CurlyClose)
+        if (i < n && tokens[i].type == CSSTokenType::CurlyClose)
             i++;
 
         sheet.rules.push_back(rule);
