@@ -8,17 +8,39 @@
 #include "Dom.h"
 #include "CssOM.h"
 
-struct StyleMap {
-    std::map<std::string, std::string> properties;
+struct StyleValue {
+    std::string value;
+    int specificity;
+    int order;
+};
 
-    void set(const std::string& name, const std::string& value) {
-        properties[name] = value;
+struct StyleMap {
+    std::map<std::string, StyleValue> properties;
+
+    void setFromCascade(const std::string& name, const std::string& value, int specificity, int order) {
+        auto it = properties.find(name);
+        if (it == properties.end() ||
+            specificity > it->second.specificity ||
+            (specificity == it->second.specificity && order >= it->second.order))
+        {
+            properties[name] = { value, specificity, order };
+        }
+    }
+
+    void setIfEmpty(const std::string& name, const std::string& value) {
+        if (properties.find(name) == properties.end()) {
+            properties[name] = { value, -1, -1 };
+        }
     }
 
     const std::string* get(const std::string& name) const {
         auto it = properties.find(name);
         if (it == properties.end()) return nullptr;
-        return &it->second;
+        return &it->second.value;
+    }
+
+    bool has(const std::string& name) const {
+        return properties.find(name) != properties.end();
     }
 };
 
@@ -27,6 +49,7 @@ public:
     std::shared_ptr<DomNode> dom;
     StyleMap styles;
     std::vector<std::shared_ptr<StyledNode>> children;
+    std::weak_ptr<StyledNode> parent;
 
     StyledNode(std::shared_ptr<DomNode> node)
         : dom(node) {

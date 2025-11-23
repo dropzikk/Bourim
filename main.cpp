@@ -22,6 +22,64 @@ HWND hGoButton;
 std::shared_ptr<LayoutBox> g_layoutRoot;
 HFONT g_hFont = NULL;
 int g_scrollY = 0;
+std::wstring g_currentUrl;
+
+const int VIEW_OFFSET_Y = 45;
+
+std::wstring ToWide(const std::string& s)
+{
+    std::wstring ws;
+    ws.reserve(s.size());
+    for (unsigned char c : s)
+        ws.push_back((wchar_t)c);
+    return ws;
+}
+
+std::string ToNarrow(const std::wstring& ws)
+{
+    std::string s;
+    s.reserve(ws.size());
+    for (wchar_t c : ws)
+        s.push_back((char)(c <= 0xFF ? c : '?'));
+    return s;
+}
+
+std::wstring MakeAbsoluteUrl(const std::wstring& pageUrlW, const std::string& href)
+{
+    if (href.rfind("http://", 0) == 0 || href.rfind("https://", 0) == 0)
+        return ToWide(href);
+
+    std::string pageUrl = ToNarrow(pageUrlW);
+    size_t schemePos = pageUrl.find("://");
+    if (schemePos == std::string::npos)
+        return ToWide(href);
+
+    std::string scheme = pageUrl.substr(0, schemePos);
+    std::string rest = pageUrl.substr(schemePos + 3);
+
+    size_t slashPos = rest.find('/');
+    std::string host = slashPos == std::string::npos ? rest : rest.substr(0, slashPos);
+    std::string path = slashPos == std::string::npos ? "/" : rest.substr(slashPos);
+
+    std::string abs;
+
+    if (!href.empty() && href[0] == '/')
+    {
+        abs = scheme + "://" + host + href;
+    }
+    else
+    {
+        std::string dir = path;
+        size_t lastSlash = dir.rfind('/');
+        if (lastSlash != std::string::npos)
+            dir = dir.substr(0, lastSlash + 1);
+        else
+            dir = "/";
+        abs = scheme + "://" + host + dir + href;
+    }
+
+    return ToWide(abs);
+}
 
 std::string DownloadURL(const std::wstring& url)
 {
@@ -179,6 +237,84 @@ void DrawLayoutBox(HDC hdc, std::shared_ptr<LayoutBox> box, int offsetY, int scr
         DrawLayoutBox(hdc, child, offsetY, scrollY);
 }
 
+void LoadPage(HWND hwnd, const std::wstring& pageUrlW)
+{
+    g_currentUrl = pageUrlW;
+
+    std::string html = DownloadURL(pageUrlW);
+    auto tokens = HtmlTokenizer::Tokenize(html);
+    auto dom = DomParser::Parse(tokens);
+
+    auto styleTexts = CssExtractor::ExtractStyles(dom);
+    auto styleLinks = CssExtractor::ExtractStyleLinks(dom);
+
+    CSSStyleSheet sheet;
+    int nextOrder = 0;
+
+    for (auto& cssText : styleTexts)
+    {
+        auto cssTokens = CssTokenizer::Tokenize(cssText);
+        CSSStyleSheet part = CssParser::Parse(cssTokens);
+
+        for (auto& rule : part.rules) {
+            rule.order = nextOrder++;
+            sheet.rules.push_back(rule);
+        }
+    }
+
+    for (auto& href : styleLinks)
+    {
+        std::wstring absUrl = MakeAbsoluteUrl(pageUrlW, href);
+        std::string css = DownloadURL(absUrl);
+
+        auto cssTokens = CssTokenizer::Tokenize(css);
+        CSSStyleSheet part = CssParser::Parse(cssTokens);
+
+        for (auto& rule : part.rules) {
+            rule.order = nextOrder++;
+            sheet.rules.push_back(rule);
+        }
+    }
+
+    auto styledRoot = StyleEngine::BuildTree(dom, sheet);
+
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int clientWidth = rc.right - rc.left;
+    int viewportWidth = clientWidth - 20;
+    if (viewportWidth < 100)
+        viewportWidth = 100;
+
+    g_layoutRoot = LayoutEngine::Build(styledRoot, viewportWidth);
+    g_scrollY = 0;
+
+    InvalidateRect(hwnd, NULL, TRUE);
+
+    SetWindowTextW(hUrlEdit, pageUrlW.c_str());
+}
+
+std::shared_ptr<LayoutBox> HitTestLayout(std::shared_ptr<LayoutBox> box, int x, int y, int offsetY, int scrollY)
+{
+    if (!box) return nullptr;
+
+    for (auto& child : box->children)
+    {
+        auto hit = HitTestLayout(child, x, y, offsetY, scrollY);
+        if (hit)
+            return hit;
+    }
+
+    int sx = box->rect.x;
+    int sy = box->rect.y - scrollY + offsetY;
+    int ex = sx + box->rect.width;
+    int ey = sy + box->rect.height;
+
+    if (x >= sx && x < ex && y >= sy && y < ey)
+        return box;
+
+    return nullptr;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -213,11 +349,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HBRUSH bk = (HBRUSH)GetStockObject(WHITE_BRUSH);
         FillRect(hdc, &rc, bk);
 
-        int offsetY = 45;
-
         if (g_layoutRoot)
         {
-            DrawLayoutBox(hdc, g_layoutRoot, offsetY, g_scrollY);
+            DrawLayoutBox(hdc, g_layoutRoot, VIEW_OFFSET_Y, g_scrollY);
         }
 
         if (oldFont)
@@ -229,39 +363,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
         if (LOWORD(wParam) == 2)
         {
-            wchar_t url[512];
-            GetWindowText(hUrlEdit, url, 512);
-
-            std::string html = DownloadURL(url);
-            auto tokens = HtmlTokenizer::Tokenize(html);
-            auto dom = DomParser::Parse(tokens);
-
-            auto styleTexts = CssExtractor::ExtractStyles(dom);
-
-            CSSStyleSheet sheet;
-
-            for (auto& cssText : styleTexts)
-            {
-                auto cssTokens = CssTokenizer::Tokenize(cssText);
-                CSSStyleSheet part = CssParser::Parse(cssTokens);
-
-                for (auto& rule : part.rules)
-                    sheet.rules.push_back(rule);
-            }
-
-            auto styledRoot = StyleEngine::BuildTree(dom, sheet);
-
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int clientWidth = rc.right - rc.left;
-            int viewportWidth = clientWidth - 20;
-            if (viewportWidth < 100)
-                viewportWidth = 100;
-
-            g_layoutRoot = LayoutEngine::Build(styledRoot, viewportWidth);
-            g_scrollY = 0;
-
-            InvalidateRect(hwnd, NULL, TRUE);
+            wchar_t urlW[512];
+            GetWindowText(hUrlEdit, urlW, 512);
+            LoadPage(hwnd, urlW);
         }
         break;
     case WM_MOUSEWHEEL:
@@ -280,7 +384,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             RECT rc;
             GetClientRect(hwnd, &rc);
-            int viewHeight = (rc.bottom - rc.top) - 45;
+            int viewHeight = (rc.bottom - rc.top) - VIEW_OFFSET_Y;
             if (viewHeight < 0) viewHeight = 0;
 
             int contentHeight = g_layoutRoot->rect.height;
@@ -292,6 +396,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
 
         InvalidateRect(hwnd, NULL, TRUE);
+    }
+    break;
+    case WM_LBUTTONDOWN:
+    {
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+
+        if (g_layoutRoot)
+        {
+            auto hitBox = HitTestLayout(g_layoutRoot, x, y, VIEW_OFFSET_Y, g_scrollY);
+
+            std::shared_ptr<StyledNode> node;
+            if (hitBox)
+                node = hitBox->styled;
+
+            while (node)
+            {
+                auto dom = node->dom;
+                if (dom->type == NodeType::Element && dom->name == "a")
+                {
+                    const DomAttribute* hrefAttr = dom->getAttribute("href");
+                    if (hrefAttr && !hrefAttr->value.empty())
+                    {
+                        std::wstring absUrl = MakeAbsoluteUrl(g_currentUrl, hrefAttr->value);
+                        LoadPage(hwnd, absUrl);
+                    }
+                    break;
+                }
+
+                if (node->parent.expired())
+                    break;
+                node = node->parent.lock();
+            }
+        }
     }
     break;
     case WM_SIZE:

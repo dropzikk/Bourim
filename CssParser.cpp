@@ -1,6 +1,14 @@
 #include "CssParser.h"
 #include <stdexcept>
 
+static int ComputeSpecificity(const std::string& sel)
+{
+    if (sel.empty()) return 0;
+    if (sel[0] == '#') return 100;
+    if (sel[0] == '.') return 10;
+    return 1;
+}
+
 CSSStyleSheet CssParser::Parse(const std::vector<CSSToken>& tokens)
 {
     CSSStyleSheet sheet;
@@ -49,6 +57,8 @@ CSSStyleSheet CssParser::Parse(const std::vector<CSSToken>& tokens)
             i++;
             continue;
         }
+
+        rule.specificity = ComputeSpecificity(rule.selector);
 
         if (i >= n || tokens[i].type != CSSTokenType::CurlyOpen)
         {

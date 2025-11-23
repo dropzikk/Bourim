@@ -3,7 +3,6 @@
 
 #include <string>
 #include <vector>
-#include <map>
 
 struct CSSDeclaration {
     std::string property;
@@ -13,6 +12,8 @@ struct CSSDeclaration {
 struct CSSRule {
     std::string selector;
     std::vector<CSSDeclaration> declarations;
+    int specificity = 0;
+    int order = 0;
 };
 
 class CSSStyleSheet {

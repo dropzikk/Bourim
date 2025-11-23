@@ -25,7 +25,24 @@ static bool matchesRule(const CSSRule& rule, const DomNode& node)
     }
 }
 
-static void applyRules(const CSSStyleSheet& sheet, StyledNode& styled) {
+static void applyUserAgentDefaults(const DomNode& dom, StyleMap& styles)
+{
+    if (dom.type != NodeType::Element)
+        return;
+
+    const std::string& tag = dom.name;
+
+    if (!styles.has("display"))
+    {
+        if (tag == "span" || tag == "a" || tag == "b" || tag == "i" || tag == "strong" || tag == "em")
+            styles.setIfEmpty("display", "inline");
+        else
+            styles.setIfEmpty("display", "block");
+    }
+}
+
+static void applyRules(const CSSStyleSheet& sheet, StyledNode& styled)
+{
     if (styled.dom->type != NodeType::Element)
         return;
 
@@ -34,19 +51,48 @@ static void applyRules(const CSSStyleSheet& sheet, StyledNode& styled) {
             continue;
 
         for (const auto& decl : rule.declarations) {
-            styled.styles.set(decl.property, decl.value);
+            styled.styles.setFromCascade(decl.property, decl.value, rule.specificity, rule.order);
+        }
+    }
+}
+
+static void applyInheritance(std::shared_ptr<StyledNode> parent, StyledNode& child)
+{
+    if (!parent)
+        return;
+
+    const char* inheritable[] = {
+        "color",
+        "font-size",
+        "font-family"
+    };
+
+    for (const char* name : inheritable)
+    {
+        if (!child.styles.has(name))
+        {
+            const std::string* pv = parent->styles.get(name);
+            if (pv)
+                child.styles.setIfEmpty(name, *pv);
         }
     }
 }
 
 static std::shared_ptr<StyledNode> buildStyledRecursive(std::shared_ptr<DomNode> domNode,
-    const CSSStyleSheet& sheet) {
+    const CSSStyleSheet& sheet,
+    std::shared_ptr<StyledNode> parent)
+{
     auto styled = std::make_shared<StyledNode>(domNode);
+    if (parent)
+        styled->parent = parent;
 
+    applyUserAgentDefaults(*domNode, styled->styles);
     applyRules(sheet, *styled);
+    applyInheritance(parent, *styled);
 
-    for (auto& childDom : domNode->children) {
-        auto childStyled = buildStyledRecursive(childDom, sheet);
+    for (auto& childDom : domNode->children)
+    {
+        auto childStyled = buildStyledRecursive(childDom, sheet, styled);
         styled->children.push_back(childStyled);
     }
 
@@ -54,6 +100,7 @@ static std::shared_ptr<StyledNode> buildStyledRecursive(std::shared_ptr<DomNode>
 }
 
 std::shared_ptr<StyledNode> StyleEngine::BuildTree(std::shared_ptr<DomNode> domRoot,
-    const CSSStyleSheet& sheet) {
-    return buildStyledRecursive(domRoot, sheet);
+    const CSSStyleSheet& sheet)
+{
+    return buildStyledRecursive(domRoot, sheet, nullptr);
 }
