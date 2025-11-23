@@ -215,12 +215,13 @@ void DrawLayoutBox(HDC hdc, std::shared_ptr<LayoutBox> box, int offsetY, int scr
         if (!bg)
             bg = box->styled->styles.get("background");
 
-        COLORREF bgCol = ParseColor(bg, RGB(255, 255, 255));
-        HBRUSH brush = CreateSolidBrush(bgCol);
-        FillRect(hdc, &r, brush);
-        DeleteObject(brush);
-
-        FrameRect(hdc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        if (bg && !bg->empty())
+        {
+            COLORREF bgCol = ParseColor(bg, RGB(255, 255, 255));
+            HBRUSH brush = CreateSolidBrush(bgCol);
+            FillRect(hdc, &r, brush);
+            DeleteObject(brush);
+        }
     }
     else
     {
