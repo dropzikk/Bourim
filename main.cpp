@@ -1,7 +1,10 @@
 #include <windows.h>
+#include <windowsx.h>
 #include <winhttp.h>
 #include <string>
-#include <functional>
+#include <memory>
+#include <algorithm>
+
 #include "HtmlTokenizer.h"
 #include "DomParser.h"
 #include "CssExtractor.h"
@@ -9,12 +12,16 @@
 #include "CssParser.h"
 #include "CssOM.h"
 #include "Style.h"
+#include "Layout.h"
 
 #pragma comment(lib, "winhttp.lib")
 
 HWND hUrlEdit;
 HWND hGoButton;
-HWND hOutput;
+
+std::shared_ptr<LayoutBox> g_layoutRoot;
+HFONT g_hFont = NULL;
+int g_scrollY = 0;
 
 std::string DownloadURL(const std::wstring& url)
 {
@@ -96,6 +103,82 @@ std::string DownloadURL(const std::wstring& url)
     return result;
 }
 
+COLORREF ParseColor(const std::string* v, COLORREF def)
+{
+    if (!v || v->empty())
+        return def;
+
+    std::string s = *v;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    if (!s.empty() && s[0] == '#' && s.size() == 7)
+    {
+        auto hex = [&](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            return 0;
+            };
+
+        int r = hex(s[1]) * 16 + hex(s[2]);
+        int g = hex(s[3]) * 16 + hex(s[4]);
+        int b = hex(s[5]) * 16 + hex(s[6]);
+        return RGB(r, g, b);
+    }
+
+    if (s == "red") return RGB(255, 0, 0);
+    if (s == "green") return RGB(0, 128, 0);
+    if (s == "blue") return RGB(0, 0, 255);
+    if (s == "black") return RGB(0, 0, 0);
+    if (s == "white") return RGB(255, 255, 255);
+    if (s == "gray" || s == "grey") return RGB(128, 128, 128);
+    if (s == "yellow") return RGB(255, 255, 0);
+    if (s == "cyan") return RGB(0, 255, 255);
+    if (s == "magenta") return RGB(255, 0, 255);
+
+    return def;
+}
+
+void DrawLayoutBox(HDC hdc, std::shared_ptr<LayoutBox> box, int offsetY, int scrollY)
+{
+    int drawX = box->rect.x;
+    int drawY = box->rect.y - scrollY + offsetY;
+    int w = box->rect.width;
+    int h = box->rect.height;
+
+    RECT r;
+    r.left = drawX;
+    r.top = drawY;
+    r.right = drawX + w;
+    r.bottom = drawY + h;
+
+    if (box->styled->dom->type == NodeType::Element)
+    {
+        const std::string* bg = box->styled->styles.get("background-color");
+        if (!bg)
+            bg = box->styled->styles.get("background");
+
+        COLORREF bgCol = ParseColor(bg, RGB(255, 255, 255));
+        HBRUSH brush = CreateSolidBrush(bgCol);
+        FillRect(hdc, &r, brush);
+        DeleteObject(brush);
+
+        FrameRect(hdc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    }
+    else
+    {
+        const std::string* col = box->styled->styles.get("color");
+        COLORREF textCol = ParseColor(col, RGB(0, 0, 0));
+        SetTextColor(hdc, textCol);
+        SetBkMode(hdc, TRANSPARENT);
+
+        std::wstring wtext(box->styled->dom->name.begin(), box->styled->dom->name.end());
+        DrawTextW(hdc, wtext.c_str(), (int)wtext.size(), &r, DT_LEFT | DT_TOP | DT_WORDBREAK);
+    }
+
+    for (auto& child : box->children)
+        DrawLayoutBox(hdc, child, offsetY, scrollY);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -111,14 +194,38 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             420, 10, 50, 25,
             hwnd, (HMENU)2, NULL, NULL);
 
-        hOutput = CreateWindow(L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER |
-            ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL |
-            WS_VSCROLL,
-            10, 45, 560, 350,
-            hwnd, (HMENU)3, NULL, NULL);
+        g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        SendMessage(hUrlEdit, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+        SendMessage(hGoButton, WM_SETFONT, (WPARAM)g_hFont, TRUE);
         break;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
 
+        HGDIOBJ oldFont = NULL;
+        if (g_hFont)
+            oldFont = SelectObject(hdc, g_hFont);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH bk = (HBRUSH)GetStockObject(WHITE_BRUSH);
+        FillRect(hdc, &rc, bk);
+
+        int offsetY = 45;
+
+        if (g_layoutRoot)
+        {
+            DrawLayoutBox(hdc, g_layoutRoot, offsetY, g_scrollY);
+        }
+
+        if (oldFont)
+            SelectObject(hdc, oldFont);
+
+        EndPaint(hwnd, &ps);
+    }
+    break;
     case WM_COMMAND:
         if (LOWORD(wParam) == 2)
         {
@@ -144,45 +251,49 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             auto styledRoot = StyleEngine::BuildTree(dom, sheet);
 
-            std::string output;
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int clientWidth = rc.right - rc.left;
+            int viewportWidth = clientWidth - 20;
+            if (viewportWidth < 100)
+                viewportWidth = 100;
 
-            std::function<void(std::shared_ptr<StyledNode>, int)> printStyled;
-            printStyled = [&](std::shared_ptr<StyledNode> node, int depth)
-                {
-                    for (int i = 0; i < depth; i++)
-                        output += "  ";
+            g_layoutRoot = LayoutEngine::Build(styledRoot, viewportWidth);
+            g_scrollY = 0;
 
-                    if (node->dom->type == NodeType::Element)
-                        output += "<" + node->dom->name + ">";
-                    else
-                        output += "\"" + node->dom->name + "\"";
-
-                    if (!node->styles.properties.empty())
-                    {
-                        output += " [";
-                        bool first = true;
-                        for (auto& kv : node->styles.properties)
-                        {
-                            if (!first)
-                                output += "; ";
-                            output += kv.first + ": " + kv.second;
-                            first = false;
-                        }
-                        output += "]";
-                    }
-
-                    output += "\r\n";
-
-                    for (auto& child : node->children)
-                        printStyled(child, depth + 1);
-                };
-
-            printStyled(styledRoot, 0);
-
-            std::wstring woutput(output.begin(), output.end());
-            SetWindowText(hOutput, woutput.c_str());
+            InvalidateRect(hwnd, NULL, TRUE);
         }
         break;
+    case WM_MOUSEWHEEL:
+    {
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        int step = 40;
+        if (delta > 0)
+            g_scrollY -= step;
+        else if (delta < 0)
+            g_scrollY += step;
+
+        if (g_scrollY < 0)
+            g_scrollY = 0;
+
+        if (g_layoutRoot)
+        {
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int viewHeight = (rc.bottom - rc.top) - 45;
+            if (viewHeight < 0) viewHeight = 0;
+
+            int contentHeight = g_layoutRoot->rect.height;
+            int maxScroll = contentHeight - viewHeight;
+            if (maxScroll < 0) maxScroll = 0;
+
+            if (g_scrollY > maxScroll)
+                g_scrollY = maxScroll;
+        }
+
+        InvalidateRect(hwnd, NULL, TRUE);
+    }
+    break;
     case WM_SIZE:
     {
         int width = LOWORD(lParam);
@@ -190,7 +301,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         MoveWindow(hUrlEdit, 10, 10, width - 80, 25, TRUE);
         MoveWindow(hGoButton, width - 65, 10, 55, 25, TRUE);
-        MoveWindow(hOutput, 10, 45, width - 20, height - 55, TRUE);
     }
     break;
 
